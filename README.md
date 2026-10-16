@@ -88,6 +88,8 @@ flowchart TD
     J -- No --> B
 ```
 
+![image alt](https://github.com/Piyush9301/Smart-Garden-Soil-Watering-Orchestrator/blob/931acb52ec40ffd98fdbe37b6fe51fb12911b98d/flowchart.png)
+
 Moisture % is computed from the raw ADC value using two calibration points (dry air and water), averaged over 10 samples.
 
 ---
