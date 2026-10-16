@@ -1,5 +1,7 @@
 # Smart-Garden-Soil-Watering-Orchestrator
 #piyushbopche
+
+
 # 🌱 Smart Garden Soil & Watering Orchestrator
 
 An Arduino Mega 2560 irrigation controller that reads soil moisture, waters **only when the soil actually needs it**, and keeps you informed over **GSM SMS**, with no Wi-Fi or internet needed. You can also control it by text message from anywhere with mobile coverage.
