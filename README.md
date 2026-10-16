@@ -40,7 +40,7 @@ An Arduino Mega 2560 irrigation controller that reads soil moisture, waters **on
 
 ## 🔌 Wiring
 
-```
+```   ![image alt](https://github.com/Piyush9301/Smart-Garden-Soil-Watering-Orchestrator/blob/e6ca74649f24df397e45d0c32638c34ee7fcd8c7/wiring.png)
                          +---------------------------+
  Soil sensor AOUT -----> | A0                        |
                          |                           |        +-------------+
