@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Garden Orchestrator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* Slate 900 */
+            color: #f8fafc;
+        }
+
+        /* Custom Scrollbar for Logs */
+        .log-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        .log-container::-webkit-scrollbar-track {
+            background: #1e293b;
+            border-radius: 4px;
+        }
+        .log-container::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 4px;
+        }
+
+        /* Animations */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 15px rgba(59, 130, 246, 0); }
+            100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        }
+        .pump-active-ring {
+            animation: pulse-ring 2s infinite;
+        }
+
+        /* Gauge styles */
+        .gauge-svg {
+            transform: rotate(-90deg);
+        }
+        .gauge-circle-bg {
+            fill: none;
+            stroke: #1e293b;
+            stroke-width: 8;
+        }
+        .gauge-circle-value {
+            fill: none;
+            stroke: #10b981; /* Emerald 500 */
+            stroke-width: 8;
+            stroke-linecap: round;
+            transition: stroke-dasharray 0.5s ease, stroke 0.5s ease;
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+
+    <div class="max-w-6xl mx-auto">
+        
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
+            <div>
+                <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400">
+                    <i class="fa-solid fa-leaf mr-2 text-emerald-400"></i>Smart Garden
+                </h1>
+                <p class="text-slate-400 text-sm mt-1">Orchestrator v1.0 Dashboard</p>
+            </div>
+            
+            <div class="flex items-center space-x-4 bg-slate-800 px-4 py-2 rounded-full border border-slate-700">
+                <span class="text-sm text-slate-300">Live Simulator</span>
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="simToggle" class="sr-only peer" checked>
+                    <div class="w-11 h-6 bg-slate-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+                </label>
+            </div>
+        </header>
+
+        <!-- Main Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+
+            <!-- Soil Moisture Card -->
+            <div class="bg-slate-800 rounded-2xl p-6 shadow-xl border border-slate-700/50 flex flex-col items-center justify-center relative">
+                <h2 class="text-slate-400 text-sm font-semibold uppercase tracking-wider absolute top-6 left-6">Soil Moisture</h2>
+                
+                <div class="relative w-40 h-40 mt-8">
+                    <svg class="gauge-svg w-full h-full" viewBox="0 0 100 100">
+                        <circle class="gauge-circle-bg" cx="50" cy="50" r="40"></circle>
+                        <circle id="moistureGauge" class="gauge-circle-value" cx="50" cy="50" r="40" stroke-dasharray="0 251.2"></circle>
+                    </svg>
+                    <div class="absolute inset-0 flex flex-col items-center justify-center">
+                        <span id="moistureText" class="text-4xl font-bold text-white">45%</span>
+                        <span id="moistureRaw" class="text-xs text-slate-400 mt-1">Raw: 450</span>
+                    </div>
+                </div>
+                <div id="sensorAlert" class="hidden mt-4 text-xs font-semibold text-rose-400 bg-rose-400/10 px-3 py-1 rounded-full">
+                    <i class="fa-solid fa-triangle-exclamation mr-1"></i> Sensor Fault
+                </div>
+            </div>
+
+            <!-- Pump Status Card -->
+            <div class="bg-slate-800 rounded-2xl p-6 shadow-xl border border-slate-700/50 flex flex-col items-center justify-center relative">
+                <h2 class="text-slate-400 text-sm font-semibold uppercase tracking-wider absolute top-6 left-6">Pump Status</h2>
+                
+                <div class="mt-8 relative">
+                    <div id="pumpRing" class="absolute inset-0 rounded-full"></div>
+                    <div id="pumpIconBg" class="relative z-10 w-24 h-24 bg-slate-700 rounded-full flex items-center justify-center transition-colors duration-300">
+                        <i id="pumpIcon" class="fa-solid fa-droplet text-4xl text-slate-400 transition-colors duration-300"></i>
+                    </div>
+                </div>
+                
+                <h3 id="pumpStatusText" class="text-2xl font-bold mt-4 text-slate-300">OFF</h3>
+                <p id="pumpReasonText" class="text-xs text-slate-500 mt-1">Idle</p>
+            </div>
+
+            <!-- Controls Card -->
+            <div class="bg-slate-800 rounded-2xl p-6 shadow-xl border border-slate-700/50 flex flex-col justify-between">
+                <div>
+                    <h2 class="text-slate-400 text-sm font-semibold uppercase tracking-wider mb-4">Manual Controls</h2>
+                    <p class="text-xs text-slate-500 mb-6">Send commands to the garden orchestrator via SMS equivalents.</p>
+                </div>
+                
+                <div class="space-y-4">
+                    <button id="btnWater" class="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-3 px-4 rounded-xl transition-colors shadow-[0_0_15px_rgba(8,145,178,0.4)] disabled:opacity-50 disabled:cursor-not-allowed">
+                        <i class="fa-solid fa-shower mr-2"></i> WATER NOW
+                    </button>
+                    <button id="btnStop" class="w-full bg-rose-600 hover:bg-rose-500 text-white font-semibold py-3 px-4 rounded-xl transition-colors shadow-[0_0_15px_rgba(225,29,72,0.4)] disabled:opacity-50 disabled:cursor-not-allowed">
+                        <i class="fa-solid fa-stop mr-2"></i> STOP PUMP
+                    </button>
+                </div>
+            </div>
+
+            <!-- Mode Settings Card -->
+            <div class="bg-slate-800 rounded-2xl p-6 shadow-xl border border-slate-700/50 flex flex-col justify-between">
+                <div>
+                    <h2 class="text-slate-400 text-sm font-semibold uppercase tracking-wider mb-4">System Mode</h2>
+                    
+                    <div class="flex items-center justify-between bg-slate-900/50 p-4 rounded-xl border border-slate-700 mb-4">
+                        <div class="flex items-center">
+                            <i class="fa-solid fa-robot text-emerald-400 mr-3 text-xl"></i>
+                            <div>
+                                <h4 class="text-sm font-semibold text-white">Auto Mode</h4>
+                                <p class="text-xs text-slate-400" id="autoModeDesc">Watering manages itself</p>
+                            </div>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="autoToggle" class="sr-only peer" checked>
+                            <div class="w-11 h-6 bg-slate-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="space-y-3">
+                    <div class="flex justify-between items-center text-sm">
+                        <span class="text-slate-400">Water ON at:</span>
+                        <span class="font-mono text-cyan-400 font-bold">30%</span>
+                    </div>
+                    <div class="flex justify-between items-center text-sm">
+                        <span class="text-slate-400">Water OFF at:</span>
+                        <span class="font-mono text-cyan-400 font-bold">60%</span>
+                    </div>
+                    <div class="flex justify-between items-center text-sm pt-3 border-t border-slate-700">
+                        <span class="text-slate-400">GSM Status:</span>
+                        <span class="text-emerald-400 text-xs font-semibold px-2 py-1 bg-emerald-400/10 rounded-full">
+                            <i class="fa-solid fa-signal mr-1"></i> OK
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs & Configuration Bottom Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- SMS / Event Log -->
+            <div class="lg:col-span-2 bg-slate-800 rounded-2xl p-6 shadow-xl border border-slate-700/50 flex flex-col h-80">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-slate-400 text-sm font-semibold uppercase tracking-wider">
+                        <i class="fa-solid fa-terminal mr-2"></i>System Event Log
+                    </h2>
+                    <button id="btnClear" class="text-xs text-slate-500 hover:text-white transition-colors">Clear</button>
+                </div>
+                
+                <div id="logContainer" class="log-container flex-1 bg-slate-900 rounded-xl p-4 overflow-y-auto font-mono text-sm space-y-2 border border-slate-700/50">
+                    <!-- Logs will be injected here -->
+                </div>
+            </div>
+
+            <!-- Hardware Interaction Info -->
+            <div class="bg-slate-800 rounded-2xl p-6 shadow-xl border border-slate-700/50 border-t-4 border-t-cyan-500">
+                <h2 class="text-white text-lg font-bold mb-3">Hardware Bridge</h2>
+                <p class="text-sm text-slate-400 mb-4 leading-relaxed">
+                    This dashboard simulates your C++ Smart Garden code logic natively in the browser. 
+                </p>
+                <p class="text-sm text-slate-400 mb-4 leading-relaxed">
+                    To control the <strong>actual hardware</strong> via this web UI instead of SMS, you can:
+                </p>
+                <ul class="text-sm text-slate-300 space-y-3 pl-1">
+                    <li class="flex items-start">
+                        <i class="fa-solid fa-check text-emerald-500 mt-1 mr-2"></i>
+                        <span>Use Twilio SMS Webhooks to link buttons to your SIM800A.</span>
+                    </li>
+                    <li class="flex items-start">
+                        <i class="fa-solid fa-check text-emerald-500 mt-1 mr-2"></i>
+                        <span>Add an ESP8266/ESP32 alongside the Mega 2560 to sync variables to Firebase.</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- State Variables (Mirroring C++ logic) ---
+        const MOISTURE_ON_PCT = 30;
+        const MOISTURE_OFF_PCT = 60;
+        const SENSOR_DRY_RAW = 600;
+        const SENSOR_WET_RAW = 270;
+
+        let state = {
+            moisturePct: 45,
+            rawValue: 450,
+            pumpOn: false,
+            autoMode: true,
+            sensorFault: false,
+            pumpReason: "Booting...",
+            simulationActive: true,
+            envFactor: -1 // simulate drying out
+        };
+
+        // DOM Elements
+        const elGauge = document.getElementById('moistureGauge');
+        const elMoistureText = document.getElementById('moistureText');
+        const elMoistureRaw = document.getElementById('moistureRaw');
+        const elSensorAlert = document.getElementById('sensorAlert');
+        
+        const elPumpRing = document.getElementById('pumpRing');
+        const elPumpIconBg = document.getElementById('pumpIconBg');
+        const elPumpIcon = document.getElementById('pumpIcon');
+        const elPumpStatusText = document.getElementById('pumpStatusText');
+        const elPumpReasonText = document.getElementById('pumpReasonText');
+        
+        const btnWater = document.getElementById('btnWater');
+        const btnStop = document.getElementById('btnStop');
+        const toggleAuto = document.getElementById('autoToggle');
+        const toggleSim = document.getElementById('simToggle');
+        
+        const logContainer = document.getElementById('logContainer');
+        const btnClear = document.getElementById('btnClear');
+
+        // Circumference of the SVG circle (r=40 -> 2*PI*40 ~= 251.2)
+        const circumference = 251.2;
+
+        // --- Core Functions ---
+
+        function addLog(message, type = 'info') {
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            let color = 'text-slate-300';
+            if(type === 'error') color = 'text-rose-400';
+            if(type === 'success') color = 'text-emerald-400';
+            if(type === 'warn') color = 'text-amber-400';
+            if(type === 'sms') color = 'text-cyan-400';
+
+            const logHtml = `
+                <div class="flex items-start">
+                    <span class="text-slate-500 mr-3">[${time}]</span>
+                    <span class="${color}">${message}</span>
+                </div>
+            `;
+            logContainer.insertAdjacentHTML('beforeend', logHtml);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        // Map percentage back to raw value for display realism
+        function pctToRaw(pct) {
+            // map(rawValue, SENSOR_DRY_RAW, SENSOR_WET_RAW, 0, 100) reversed
+            return Math.floor(SENSOR_DRY_RAW - (pct / 100) * (SENSOR_DRY_RAW - SENSOR_WET_RAW));
+        }
+
+        function updateMoistureDisplay() {
+            // Update Text
+            elMoistureText.innerText = `${state.moisturePct}%`;
+            elMoistureRaw.innerText = `Raw: ${state.rawValue}`;
+
+            // Update SVG Gauge Dash
+            const offset = circumference - (state.moisturePct / 100) * circumference;
+            elGauge.style.strokeDasharray = `${circumference} ${circumference}`;
+            elGauge.style.strokeDashoffset = offset;
+
+            // Gauge Color formatting
+            if (state.sensorFault) {
+                elGauge.style.stroke = '#f43f5e'; // Rose
+                elSensorAlert.classList.remove('hidden');
+                elMoistureText.classList.add('text-rose-400');
+            } else {
+                elSensorAlert.classList.add('hidden');
+                elMoistureText.classList.remove('text-rose-400');
+                if (state.moisturePct <= MOISTURE_ON_PCT) {
+                    elGauge.style.stroke = '#f59e0b'; // Amber
+                } else if (state.moisturePct >= MOISTURE_OFF_PCT) {
+                    elGauge.style.stroke = '#3b82f6'; // Blue
+                } else {
+                    elGauge.style.stroke = '#10b981'; // Emerald
+                }
+            }
+        }
+
+        function updatePumpDisplay() {
+            if (state.pumpOn) {
+                elPumpStatusText.innerText = "ON";
+                elPumpStatusText.className = "text-2xl font-bold mt-4 text-cyan-400";
+                elPumpIconBg.className = "relative z-10 w-24 h-24 bg-cyan-900 rounded-full flex items-center justify-center";
+                elPumpIcon.className = "fa-solid fa-droplet text-4xl text-cyan-400";
+                elPumpRing.className = "absolute inset-0 rounded-full pump-active-ring";
+                elPumpReasonText.innerText = state.pumpReason;
+                
+                btnWater.disabled = true;
+                btnStop.disabled = false;
+            } else {
+                elPumpStatusText.innerText = "OFF";
+                elPumpStatusText.className = "text-2xl font-bold mt-4 text-slate-300";
+                elPumpIconBg.className = "relative z-10 w-24 h-24 bg-slate-700 rounded-full flex items-center justify-center";
+                elPumpIcon.className = "fa-solid fa-droplet text-4xl text-slate-400";
+                elPumpRing.className = "absolute inset-0 rounded-full";
+                elPumpReasonText.innerText = state.pumpReason;
+
+                btnWater.disabled = state.sensorFault;
+                btnStop.disabled = true;
+            }
+        }
+
+        function pumpStart(why) {
+            if (state.sensorFault) {
+                addLog(`Refused to start pump: Sensor fault`, 'error');
+                return;
+            }
+            if (!state.pumpOn) {
+                state.pumpOn = true;
+                state.pumpReason = `Started: ${why}`;
+                addLog(`SMS: Watering started (${why}). Soil ${state.moisturePct}%.`, 'sms');
+                addLog(`Relay PIN 7 -> HIGH (Pump ON)`, 'success');
+                updatePumpDisplay();
+            }
+        }
+
+        function pumpStop(why) {
+            if (state.pumpOn) {
+                state.pumpOn = false;
+                state.pumpReason = `Stopped: ${why}`;
+                addLog(`SMS: Watering stopped (${why}). Soil ${state.moisturePct}%.`, 'sms');
+                addLog(`Relay PIN 7 -> LOW (Pump OFF)`, 'warn');
+                updatePumpDisplay();
+            }
+        }
+
+        // --- Hardware Simulation Loop (Replacing C++ controlStep loop) ---
+        setInterval(() => {
+            if (!state.simulationActive) return;
+
+            // Simulate soil dynamics
+            if (state.pumpOn) {
+                // Pumping adds moisture rapidly
+                state.moisturePct += 3;
+                if(state.moisturePct > 100) state.moisturePct = 100;
+            } else {
+                // Soil slowly dries out, slightly randomized
+                if (Math.random() > 0.4) {
+                    state.moisturePct -= 1;
+                }
+                if (state.moisturePct < 0) state.moisturePct = 0;
+            }
+
+            state.rawValue = pctToRaw(state.moisturePct);
+            updateMoistureDisplay();
+
+            // Run exact C++ Control Logic
+            if (!state.sensorFault) {
+                if (state.pumpOn) {
+                    if (state.moisturePct >= MOISTURE_OFF_PCT) {
+                        pumpStop("soil wet enough");
+                    }
+                } else if (state.autoMode && state.moisturePct <= MOISTURE_ON_PCT) {
+                    pumpStart("auto");
+                }
+            }
+            
+        }, 2000); // Emulate the 2s SAMPLE_MS
+
+        // --- Event Listeners ---
+        
+        btnWater.addEventListener('click', () => {
+            if (state.moisturePct >= MOISTURE_OFF_PCT) {
+                addLog(`SMS: Soil already wet (${state.moisturePct}%). Not watering.`, 'sms');
+            } else {
+                addLog(`Command Sent: WATER`, 'info');
+                pumpStart("SMS");
+            }
+        });
+
+        btnStop.addEventListener('click', () => {
+            addLog(`Command Sent: STOP`, 'info');
+            pumpStop("SMS stop");
+        });
+
+        toggleAuto.addEventListener('change', (e) => {
+            state.autoMode = e.target.checked;
+            document.getElementById('autoModeDesc').innerText = state.autoMode ? "Watering manages itself" : "Manual control via SMS only";
+            addLog(state.autoMode ? `SMS: Auto mode ON.` : `SMS: Auto mode OFF. Send WATER to irrigate.`, 'sms');
+        });
+
+        toggleSim.addEventListener('change', (e) => {
+            state.simulationActive = e.target.checked;
+            addLog(state.simulationActive ? `Simulation Resumed` : `Simulation Paused`, 'info');
+        });
+
+        btnClear.addEventListener('click', () => {
+            logContainer.innerHTML = '';
+            addLog('Log cleared', 'info');
+        });
+
+        // Initialize UI
+        addLog('System Booting...', 'info');
+        setTimeout(() => {
+            addLog('Initializing GSM... OK', 'success');
+            addLog(`SMS: Smart Garden online. Soil ${state.moisturePct}%. Send HELP for commands.`, 'sms');
+            state.pumpReason = "Ready";
+            updatePumpDisplay();
+            updateMoistureDisplay();
+        }, 1500);
+
+    </script>
+</body>
+</html>
