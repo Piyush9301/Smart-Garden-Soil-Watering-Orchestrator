@@ -39,8 +39,10 @@ An Arduino Mega 2560 irrigation controller that reads soil moisture, waters **on
 ---
 
 ## 🔌 Wiring
+![image alt](https://github.com/Piyush9301/Smart-Garden-Soil-Watering-Orchestrator/blob/e6ca74649f24df397e45d0c32638c34ee7fcd8c7/wiring.png)
 
-```   ![image alt](https://github.com/Piyush9301/Smart-Garden-Soil-Watering-Orchestrator/blob/e6ca74649f24df397e45d0c32638c34ee7fcd8c7/wiring.png)
+```
+
                          +---------------------------+
  Soil sensor AOUT -----> | A0                        |
                          |                           |        +-------------+
@@ -186,6 +188,11 @@ SmartGarden-Orchestrator/
 - Scheduled watering windows
 
 ---
+
+
+
+##  Prototype
+![image alt](https://github.com/Piyush9301/Smart-Garden-Soil-Watering-Orchestrator/blob/4759bf8ee16d2d8c20c9e349f8a76ed6a988de4b/Smart%20Irrigation%20System%20Prototype.png)
 
 ## 📄 License
 
