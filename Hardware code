@@ -1,0 +1,380 @@
+
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ====================== USER CONFIG ======================
+const char OWNER_NUMBER[] = "+91XXXXXXXXXX";   // <-- your number, with country code
+
+#define SOIL_PIN          A0
+#define RELAY_PIN         7
+#define RELAY_ACTIVE_LOW  true     // most relay modules are active LOW
+#define LCD_ADDR          0x27     // try 0x3F if the LCD stays blank
+
+// Calibrate: raw value in dry air -> DRY, raw value in water -> WET
+const int SENSOR_DRY_RAW = 600;
+const int SENSOR_WET_RAW = 270;
+
+// Raw readings outside this window are treated as a sensor fault
+const int RAW_FAULT_LOW  = 50;
+const int RAW_FAULT_HIGH = 1000;
+
+const int MOISTURE_ON_PCT  = 30;   // start watering at or below this
+const int MOISTURE_OFF_PCT = 60;   // stop watering at or above this
+const int MIN_RISE_PCT     = 5;    // expected rise per cycle, else warn
+
+const unsigned long MAX_RUN_MS     = 60UL * 1000UL;          // max pump time per cycle
+const unsigned long SOAK_MS        = 15UL * 60UL * 1000UL;   // wait between auto cycles
+const unsigned long SAMPLE_MS      = 2000UL;
+const unsigned long LCD_MS         = 1000UL;
+const unsigned long FAULT_ALERT_MS = 60UL * 60UL * 1000UL;   // repeat fault SMS hourly
+const unsigned long GSM_RETRY_MS   = 60UL * 1000UL;
+// =========================================================
+
+#define GSM Serial1
+LiquidCrystal_I2C lcd(LCD_ADDR, 20, 4);
+
+// ---------------------- state ----------------------
+int  rawValue        = 0;
+int  moisturePct     = 0;
+int  moistureAtStart = 0;
+bool sensorFault     = false;
+bool faultAlertSent  = false;
+unsigned long lastFaultAlertMs = 0;
+
+bool pumpOn       = false;
+bool autoMode     = true;
+bool haveWatered  = false;
+bool cutoffPending = false;
+unsigned long pumpStartMs    = 0;
+unsigned long lastWaterEndMs = 0;
+unsigned long lastSampleMs   = 0;
+unsigned long lastLcdMs      = 0;
+unsigned long lastGsmTryMs   = 0;
+
+bool   gsmReady   = false;
+bool   expectBody = false;
+String gsmLine    = "";
+String smsSender  = "";
+String lastEvent  = "Booting";
+
+// ---------------------- relay ----------------------
+void setRelay(bool on) {
+  bool level = RELAY_ACTIVE_LOW ? !on : on;
+  digitalWrite(RELAY_PIN, level ? HIGH : LOW);
+}
+
+// ---------------------- LCD ----------------------
+void lcdLine(uint8_t row, const char* txt) {
+  char b[21];
+  snprintf(b, sizeof(b), "%-20s", txt);
+  lcd.setCursor(0, row);
+  lcd.print(b);
+}
+
+void updateLcd() {
+  char b[21];
+  snprintf(b, sizeof(b), "Soil:%3d%% Raw:%4d", moisturePct, rawValue);
+  lcdLine(0, b);
+  snprintf(b, sizeof(b), "Pump:%-3s Mode:%s", pumpOn ? "ON" : "OFF", autoMode ? "AUTO" : "MAN");
+  lcdLine(1, b);
+  snprintf(b, sizeof(b), "ON<%d OFF>%d GSM:%s", MOISTURE_ON_PCT, MOISTURE_OFF_PCT, gsmReady ? "OK" : "--");
+  lcdLine(2, b);
+  if (pumpOn) {
+    snprintf(b, sizeof(b), "Watering %lus", (unsigned long)((millis() - pumpStartMs) / 1000UL));
+  } else if (sensorFault) {
+    snprintf(b, sizeof(b), "SENSOR FAULT!");
+  } else {
+    snprintf(b, sizeof(b), "%s", lastEvent.c_str());
+  }
+  lcdLine(3, b);
+}
+
+// ---------------------- GSM low level ----------------------
+bool waitFor(const char* token, unsigned long timeoutMs) {
+  String buf = "";
+  unsigned long t = millis();
+  while (millis() - t < timeoutMs) {
+    // keep the pump safe even while blocked on the modem
+    if (pumpOn && millis() - pumpStartMs >= MAX_RUN_MS) {
+      setRelay(false);
+      pumpOn = false;
+      cutoffPending = true;
+    }
+    while (GSM.available()) {
+      buf += (char)GSM.read();
+      if (buf.indexOf(token) >= 0) return true;
+      if (buf.indexOf("ERROR") >= 0) return false;
+    }
+  }
+  return false;
+}
+
+bool sendAT(const char* cmd, const char* expect, unsigned long timeoutMs) {
+  GSM.println(cmd);
+  return waitFor(expect, timeoutMs);
+}
+
+bool gsmRegistered() {
+  GSM.println(F("AT+CREG?"));
+  String buf = "";
+  unsigned long t = millis();
+  while (millis() - t < 1500UL) {
+    while (GSM.available()) buf += (char)GSM.read();
+  }
+  return buf.indexOf(",1") >= 0 || buf.indexOf(",5") >= 0;   // home or roaming
+}
+
+void initGsm() {
+  GSM.begin(9600);
+  delay(2000);
+  gsmReady = false;
+  for (int i = 0; i < 5 && !gsmReady; i++) gsmReady = sendAT("AT", "OK", 1000);
+  if (!gsmReady) return;
+
+  sendAT("ATE0", "OK", 1000);                 // echo off
+  sendAT("AT+CMGF=1", "OK", 1000);            // SMS text mode
+  sendAT("AT+CSCS=\"GSM\"", "OK", 1000);
+  sendAT("AT+CNMI=2,2,0,0,0", "OK", 1000);    // push incoming SMS straight to serial
+  sendAT("AT+CMGD=1,4", "OK", 5000);          // clear stored SMS
+
+  bool reg = false;
+  for (int i = 0; i < 15 && !reg; i++) {
+    reg = gsmRegistered();
+    if (!reg) delay(1000);
+  }
+  if (!reg) gsmReady = false;
+}
+
+bool sendSMS(const String& text) {
+  if (!gsmReady) return false;
+  String t = text;
+  if (t.length() > 155) t = t.substring(0, 155);
+
+  GSM.print(F("AT+CMGS=\""));
+  GSM.print(OWNER_NUMBER);
+  GSM.println('"');
+  if (!waitFor(">", 5000)) {
+    GSM.write(27);                            // ESC = cancel
+    return false;
+  }
+  GSM.print(t);
+  GSM.write(26);                              // Ctrl+Z = send
+  bool ok = waitFor("OK", 20000);
+  Serial.println(ok ? F("SMS sent") : F("SMS FAILED"));
+  return ok;
+}
+
+// ---------------------- pump control ----------------------
+void pumpStart(const char* why) {
+  moistureAtStart = moisturePct;
+  pumpStartMs = millis();
+  pumpOn = true;
+  setRelay(true);
+  lastEvent = String("Started: ") + why;
+  Serial.println(lastEvent);
+  sendSMS(String("Watering started (") + why + "). Soil " + moisturePct + "%.");
+}
+
+void pumpStop(const char* why, bool warn) {
+  setRelay(false);
+  pumpOn = false;
+  lastWaterEndMs = millis();
+  haveWatered = true;
+  unsigned long secs = (millis() - pumpStartMs) / 1000UL;
+  lastEvent = String("Stopped: ") + why;
+  Serial.println(lastEvent);
+
+  String m = String("Watering stopped (") + why + ", " + secs + "s). Soil " + moisturePct + "%.";
+  if (warn) m += " WARNING: little rise, check tank/pipe/sensor.";
+  sendSMS(m);
+}
+
+bool soakDone() {
+  return !haveWatered || (millis() - lastWaterEndMs >= SOAK_MS);
+}
+
+// ---------------------- sensor ----------------------
+bool sampleSensor() {
+  long sum = 0;
+  for (int i = 0; i < 10; i++) {
+    sum += analogRead(SOIL_PIN);
+    delay(5);
+  }
+  rawValue = (int)(sum / 10);
+  if (rawValue < RAW_FAULT_LOW || rawValue > RAW_FAULT_HIGH) return false;
+  moisturePct = constrain(map(rawValue, SENSOR_DRY_RAW, SENSOR_WET_RAW, 0, 100), 0, 100);
+  return true;
+}
+
+void controlStep() {
+  bool ok = sampleSensor();
+  Serial.print(F("raw="));
+  Serial.print(rawValue);
+  Serial.print(F("  soil="));
+  Serial.print(moisturePct);
+  Serial.print(F("%  pump="));
+  Serial.println(pumpOn ? F("ON") : F("OFF"));
+
+  if (!ok) {
+    sensorFault = true;
+    if (pumpOn) pumpStop("sensor fault", false);
+    unsigned long now = millis();
+    if (!faultAlertSent || now - lastFaultAlertMs >= FAULT_ALERT_MS) {
+      faultAlertSent = true;
+      lastFaultAlertMs = now;
+      lastEvent = "Sensor fault";
+      sendSMS(String("ALERT: soil sensor fault (raw ") + rawValue + "). Watering disabled.");
+    }
+    return;
+  }
+
+  if (sensorFault) {
+    sensorFault = false;
+    faultAlertSent = false;
+    lastEvent = "Sensor OK";
+  }
+
+  if (pumpOn) {
+    if (moisturePct >= MOISTURE_OFF_PCT) pumpStop("soil wet enough", false);
+  } else if (autoMode && moisturePct <= MOISTURE_ON_PCT && soakDone()) {
+    pumpStart("auto");
+  }
+}
+
+// ---------------------- SMS commands ----------------------
+String statusText() {
+  String s = String("Soil ") + moisturePct + "% (raw " + rawValue + "). Pump ";
+  s += pumpOn ? "ON" : "OFF";
+  s += ". Mode ";
+  s += autoMode ? "AUTO" : "MANUAL";
+  s += ".";
+  if (sensorFault) s += " SENSOR FAULT.";
+  return s;
+}
+
+void handleCommand(String cmd) {
+  cmd.trim();
+  cmd.toUpperCase();
+
+  if (cmd == "STATUS") {
+    sendSMS(statusText());
+  } else if (cmd == "WATER") {
+    if (sensorFault)                           sendSMS("Refused: sensor fault.");
+    else if (pumpOn)                           sendSMS("Pump already ON.");
+    else if (moisturePct >= MOISTURE_OFF_PCT)  sendSMS(String("Soil already wet (") + moisturePct + "%). Not watering.");
+    else                                       pumpStart("SMS");
+  } else if (cmd == "STOP") {
+    if (pumpOn) pumpStop("SMS stop", false);
+    else        sendSMS("Pump already OFF.");
+  } else if (cmd == "AUTO ON") {
+    autoMode = true;
+    sendSMS("Auto mode ON.");
+  } else if (cmd == "AUTO OFF") {
+    autoMode = false;
+    sendSMS("Auto mode OFF. Send WATER to irrigate.");
+  } else {
+    sendSMS("Commands: STATUS, WATER, STOP, AUTO ON, AUTO OFF");
+  }
+}
+
+bool isOwner(const String& num) {
+  String own(OWNER_NUMBER);
+  String tail = own.substring(own.length() - 10);   // compare last 10 digits
+  return num.endsWith(tail);
+}
+
+void processSms(const String& from, const String& body) {
+  Serial.print(F("SMS from "));
+  Serial.print(from);
+  Serial.print(F(": "));
+  Serial.println(body);
+  if (!isOwner(from)) return;                        // ignore strangers
+  handleCommand(body);
+}
+
+void pollGsm() {
+  while (GSM.available()) {
+    char c = (char)GSM.read();
+    if (c == '\r') continue;
+    if (c != '\n') {
+      if (gsmLine.length() < 200) gsmLine += c;
+      continue;
+    }
+    String line = gsmLine;
+    gsmLine = "";
+    line.trim();
+    if (line.length() == 0) continue;
+
+    if (expectBody) {
+      expectBody = false;
+      processSms(smsSender, line);
+    } else if (line.startsWith("+CMT:")) {
+      int a = line.indexOf('"');
+      int b = line.indexOf('"', a + 1);
+      smsSender = (a >= 0 && b > a) ? line.substring(a + 1, b) : String("");
+      expectBody = true;
+    }
+  }
+}
+
+// ---------------------- Arduino ----------------------
+void setup() {
+  // relay OFF before the pin becomes an output (no startup pulse)
+  digitalWrite(RELAY_PIN, RELAY_ACTIVE_LOW ? HIGH : LOW);
+  pinMode(RELAY_PIN, OUTPUT);
+
+  Serial.begin(9600);
+  lcd.init();
+  lcd.backlight();
+  lcdLine(0, "Smart Garden");
+  lcdLine(1, "Orchestrator v1.0");
+  lcdLine(2, "Starting GSM...");
+
+  bool ok = sampleSensor();
+  initGsm();
+  lcdLine(2, gsmReady ? "GSM: OK" : "GSM: FAIL");
+
+  if (gsmReady) {
+    String hello = "Smart Garden online. ";
+    if (ok) {
+      hello += "Soil ";
+      hello += moisturePct;
+      hello += "%.";
+    } else {
+      hello += "Sensor fault!";
+    }
+    hello += " Send HELP for commands.";
+    sendSMS(hello);
+  }
+  lastEvent = "Ready";
+  delay(1500);
+}
+
+void loop() {
+  pollGsm();
+  unsigned long now = millis();
+
+  if (cutoffPending) {                               // pump was cut during a modem wait
+    cutoffPending = false;
+    pumpStop("max run time", moisturePct - moistureAtStart < MIN_RISE_PCT);
+  }
+
+  if (pumpOn && now - pumpStartMs >= MAX_RUN_MS) {
+    pumpStop("max run time", moisturePct - moistureAtStart < MIN_RISE_PCT);
+  }
+
+  if (now - lastSampleMs >= SAMPLE_MS) {
+    lastSampleMs = now;
+    controlStep();
+  }
+
+  if (now - lastLcdMs >= LCD_MS) {
+    lastLcdMs = now;
+    updateLcd();
+  }
+
+  if (!gsmReady && !pumpOn && now - lastGsmTryMs >= GSM_RETRY_MS) {
+    lastGsmTryMs = now;
+    initGsm();
+  }
+}
